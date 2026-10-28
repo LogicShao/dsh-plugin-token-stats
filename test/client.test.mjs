@@ -1290,6 +1290,19 @@ test("dispose clears the polling interval", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Layout invariants (visual regression)
+// ---------------------------------------------------------------------------
+test("model/project rows keep a fixed value column so bars and costs align", () => {
+  const host = startHostSync();
+  const css = host.exports.__test.CSS_TEXT;
+  // 第三列必须是固定宽度而不是 auto：auto 会让每行按自身文案宽度分列，
+  // 导致不同行（如 95.5% · $41.99 与 4.5% · $0.00）的进度条起点和数字错位。
+  assert.match(css, /\.ts_row\{[^}]*grid-template-columns:minmax\(0,1fr\) 88px 112px/);
+  assert.doesNotMatch(css, /\.ts_row\{[^}]*grid-template-columns:minmax\(0,1fr\) 88px auto/);
+  assert.match(css, /\.ts_rowValue\{[^}]*text-align:right/);
+});
+
+// ---------------------------------------------------------------------------
 // Small helpers used by tests
 // ---------------------------------------------------------------------------
 function startHostSync() {
@@ -1334,3 +1347,4 @@ function parseCsvRow(line) {
   cells.push(current);
   return cells;
 }
+
