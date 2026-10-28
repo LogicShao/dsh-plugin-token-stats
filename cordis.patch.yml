@@ -1,0 +1,38 @@
+# dsh-plugin-token-stats bundle layer.
+#
+# 只挂载本插件；统计所需的服务（session-persistence / sessions / connection / tools）
+# 全部从宿主按需读取，缺少任何一个时插件降级（读不到数据就显示空态），不会拖垮启动。
+#
+# 想改价格表 / 币种 / 缓存 TTL：不要改本文件，在 profile 的 cordis.patch.yml 里
+# 按 id `token-stats` 覆盖 config（深层对象会按 Cordis 的字段合并规则覆盖）。
+- insert:
+    - id: token-stats
+      name: 'dsh-plugin-token-stats'
+      config:
+        # 成本估算单价：每 100 万 token 的美元价。
+        # 键可以是 "provider/model"（精确）或 "model"（跨 provider 兜底）；
+        # 未命中的模型按 0 计价，并在响应里列进 prices.unmatched。
+        prices:
+          opencode-go/deepseek-v4.1-flash:
+            input: 0.15
+            output: 0.6
+            cacheRead: 0.015
+            cacheWrite: 0.15
+          opencode-go/deepseek-v4-flash:
+            input: 0.1
+            output: 0.4
+            cacheRead: 0.01
+            cacheWrite: 0.1
+          deepseek-account/deepseek-flash:
+            input: 0
+            output: 0
+            cacheRead: 0
+            cacheWrite: 0
+        currency: USD
+        usdToCny: 7.1
+        # 一次刷新里最多并发读几个 session 日志（数据量大时保护磁盘/内存）。
+        readConcurrency: 3
+        # 两次自动刷新之间的最小间隔；UI 轮询也受它兜底。
+        refreshIntervalMs: 15000
+        # 首次加载时是否在后台立刻全量建索引（false 则等第一次查询再建）。
+        refreshOnStart: true

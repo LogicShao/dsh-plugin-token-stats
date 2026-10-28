@@ -1,0 +1,52 @@
+{
+  "name": "dsh-plugin-token-stats",
+  "version": "0.1.0",
+  "description": "Host-side DeepSeek Harness plugin: cross-session token usage statistics with daily spend, per-model/per-project breakdowns, cost estimates, and a Web GUI dashboard (settings page + sidebar quick action).",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "token",
+    "usage",
+    "statistics",
+    "cost"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
