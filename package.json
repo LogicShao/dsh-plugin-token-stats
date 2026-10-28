@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-token-stats",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Host-side DeepSeek Harness plugin: cross-session token usage statistics with daily spend, per-model/per-project breakdowns, cost estimates, and a Web GUI dashboard (settings page + sidebar quick action).",
   "keywords": [
     "deepseek-harness",
@@ -50,5 +50,6 @@
     "test": "node --test test/"
   }
 }
+
 
 

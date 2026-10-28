@@ -1302,6 +1302,23 @@ test("model/project rows keep a fixed value column so bars and costs align", () 
   assert.match(css, /\.ts_rowValue\{[^}]*text-align:right/);
 });
 
+test("layout adapts to the actual container width (settings pane vs modal)", () => {
+  const host = startHostSync();
+  const css = host.exports.__test.CSS_TEXT;
+  // 设置页内容区只有 ~612px，但视口可能是 1440px：必须用容器查询而不是视口媒体查询，
+  // 否则 2 列卡片不堆叠，固定列会把模型/项目名字挤成 "d…"。
+  assert.match(css, /\.ts_dash\{[^}]*container-type:inline-size/);
+  assert.match(css, /@container tsdash \(max-width: 700px\)\{\.ts_grid2\{grid-template-columns:minmax\(0,1fr\)\}/);
+  assert.match(css, /@container tsdash \(max-width: 640px\)\{\.ts_row\{grid-template-columns:minmax\(0,1fr\) 64px 96px/);
+  // 柱状图 tooltip 是绝对定位：两端柱子必须贴边对齐，否则会撑大滚动宽度，
+  // 让弹窗/设置页出现横向拖动（overflow-x 被计算为 auto）。
+  assert.match(css, /\[data-edge=start\] \.ts_barTip\{left:0;transform:none\}/);
+  assert.match(css, /\[data-edge=end\] \.ts_barTip\{left:auto;right:0;transform:none\}/);
+  const html = host.bundleModule.__test.previewHtml(MOCK_SUMMARY);
+  assert.match(html, /data-edge="start"/);
+  assert.match(html, /data-edge="end"/);
+});
+
 // ---------------------------------------------------------------------------
 // Small helpers used by tests
 // ---------------------------------------------------------------------------
