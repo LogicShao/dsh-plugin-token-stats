@@ -331,7 +331,14 @@ function buildMockSummary() {
       topModel: { key: "opencode-go/deepseek-v4.1-flash", totalTokens: 2562000, share: 0.61 },
       projectedMonthUsd: 12.47,
     },
-    prices: { currency: "USD", usdToCny: 7.1, matchedModels: 2, unmatchedModels: ["deepseek-account/deepseek-flash"] },
+    prices: {
+      currency: "USD",
+      usdToCny: 7.1,
+      matchedModels: 2,
+      unmatchedModels: ["deepseek-account/deepseek-flash"],
+      timeAware: true,
+      peakWindow: "北京时间周一至周五 09:00-12:00、14:00-18:00（UTC 01:00-04:00、06:00-10:00），周末与其余时段为闲时",
+    },
   };
 }
 
@@ -1135,6 +1142,33 @@ test("pure helpers behave as the dashboard expects", async () => {
   assert.equal(helpers.isSummaryEmpty(null), true);
   assert.equal(helpers.isSummaryEmpty(EMPTY_SUMMARY), true);
   assert.equal(helpers.isSummaryEmpty(MOCK_SUMMARY), false);
+
+  const makeT = (lang) => {
+    const dictionary = mod.__test.locales[lang];
+    return (key, params) => {
+      const template = dictionary[key] === undefined ? key : dictionary[key];
+      if (!params) return template;
+      return String(template).replace(/\{([A-Za-z0-9_]+)\}/g, (match, name) => (params[name] === undefined ? match : String(params[name])));
+    };
+  };
+  const zhT = makeT("zh");
+  const enT = makeT("en");
+  assert.equal(helpers.isCjkText("北京时间周一"), true);
+  assert.equal(helpers.isCjkText("Beijing time"), false);
+
+  const hostWindow = "北京时间周一至周五 09:00-12:00 为高峰，其余为闲时";
+  const zhNote = helpers.pricingWindowNote(zhT, { peakWindow: hostWindow });
+  assert.match(zhNote.text, /北京时间周一至周五 09:00-12:00 为高峰/);
+  assert.equal(zhNote.title, "");
+  const enNote = helpers.pricingWindowNote(enT, { peakWindow: hostWindow });
+  assert.equal(enNote.text, mod.__test.locales.en.timeAwareNote);
+  assert.equal(enNote.title, hostWindow);
+  const latinWindow = helpers.pricingWindowNote(enT, { peakWindow: "weekdays 09:00-12:00, 14:00-18:00" });
+  assert.match(latinWindow.text, /weekdays 09:00-12:00/);
+  assert.equal(latinWindow.title, "");
+  const absentWindow = helpers.pricingWindowNote(zhT, {});
+  assert.equal(absentWindow.text, mod.__test.locales.zh.timeAwareNote);
+  assert.equal(absentWindow.title, "");
 });
 
 test("previewHtml renders the real dashboard synchronously in the ready state", async () => {
@@ -1154,6 +1188,8 @@ test("previewHtml renders the real dashboard synchronously in the ready state", 
   assert.match(dom, /opencode-go/);
   assert.match(dom, /agent_workspace/);
   assert.match(dom, /\$4\.81|1\.9M/);
+  assert.match(dom, /class="ts_timeAware"/);
+  assert.match(dom, /成本按 DeepSeek 官方峰谷价估算/);
   assert.doesNotMatch(dom, /ts_spinner/);
   assert.doesNotMatch(dom, /正在加载用量数据/);
 
@@ -1176,6 +1212,57 @@ test("previewHtml renders the real dashboard synchronously in the ready state", 
   });
   assert.match(error, /加载用量数据失败/);
   assert.match(error, /HTTP 503/);
+});
+
+test("peak/off-peak pricing note renders when prices.timeAware is true", async () => {
+  const host = await startHost();
+  const section = renderRegistration(host, "settings.section");
+  assert.match(section, /class="ts_timeAware"/);
+  assert.match(section, /成本按 DeepSeek 官方峰谷价估算/);
+  // The Host-provided peakWindow is authoritative and rendered verbatim.
+  assert.match(section, /北京时间周一至周五 09:00-12:00、14:00-18:00/);
+  assert.match(section, /周末与其余时段为闲时/);
+
+  const english = host.bundleModule.__test.previewHtml(MOCK_SUMMARY, { locale: "en" });
+  assert.match(english, /peak\/off-peak pricing/);
+  // English UI keeps its localized window copy visible; the Chinese Host label rides in the tooltip.
+  assert.match(english, /weekdays 09:00–12:00 and 14:00–18:00/);
+  assert.match(english, /class="ts_timeAware" title="北京时间周一至周五 09:00-12:00/);
+});
+
+test("peak/off-peak pricing note falls back to the built-in window when peakWindow is absent", async () => {
+  const host = await startHost();
+  const withoutWindow = clone(MOCK_SUMMARY);
+  delete withoutWindow.prices.peakWindow;
+
+  const zh = host.bundleModule.__test.previewHtml(withoutWindow);
+  assert.match(zh, /class="ts_timeAware"/);
+  assert.match(zh, /工作日 09:00–12:00 \/ 14:00–18:00 为高峰价/);
+  assert.match(zh, /其余为闲时价/);
+
+  const en = host.bundleModule.__test.previewHtml(withoutWindow, { locale: "en" });
+  assert.match(en, /weekdays 09:00–12:00 and 14:00–18:00/);
+});
+
+test("legacy summaries without prices.timeAware keep the old footnote, and priced zero-cost models render $0.00", async () => {
+  const host = await startHost();
+
+  const legacy = clone(MOCK_SUMMARY);
+  delete legacy.prices.timeAware;
+  const legacyHtml = host.bundleModule.__test.previewHtml(legacy);
+  assert.doesNotMatch(legacyHtml, /class="ts_timeAware"/);
+  assert.doesNotMatch(legacyHtml, /峰谷价/);
+  assert.match(legacyHtml, /生成于/);
+  assert.match(legacyHtml, /时区 Asia\/Shanghai/);
+  assert.match(legacyHtml, /1 个模型未配置价格/);
+
+  // A priced model whose cost happens to be zero is displayed as $0.00, no special case.
+  const pricedZero = clone(MOCK_SUMMARY);
+  pricedZero.byModel[0].priced = true;
+  pricedZero.byModel[0].costUsd = 0;
+  pricedZero.byModel[0].costCny = 0;
+  const pricedZeroHtml = host.bundleModule.__test.previewHtml(pricedZero);
+  assert.match(pricedZeroHtml, /61% · \$0\.00/);
 });
 
 test("previewHtml escapes untrusted session text", async () => {

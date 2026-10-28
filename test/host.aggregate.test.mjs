@@ -16,7 +16,7 @@ import {
   shiftDayKey,
 } from '../lib/host/aggregate.js'
 import { extractSessionUsage } from '../lib/host/extract.js'
-import { normalizePrices } from '../lib/host/prices.js'
+import { computeCost, normalizePrices } from '../lib/host/prices.js'
 
 const TZ = 'UTC'
 const NOW = Date.parse('2026-10-26T12:00:00Z')
@@ -24,9 +24,21 @@ const PRICES = normalizePrices({
   'opencode-go/deepseek-v4.1-flash': { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0.15 },
   'opencode-go/deepseek-v4-flash': { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0.1 },
 })
+/** 官方 DeepSeek flash 峰谷价（USD / 1M tokens，2026-10-28 核对）。 */
+const PEAK_PRICES = normalizePrices({
+  'deepseek-account/deepseek-flash': {
+    peak: { input: 0.3, cacheRead: 0.006, output: 1.2, cacheWrite: 0 },
+    offPeak: { input: 0.15, cacheRead: 0.003, output: 0.6, cacheWrite: 0 },
+  },
+})
 
 function msOf(day) {
   return Date.parse(`${day}T12:00:00Z`)
+}
+
+/** 明确指定事件时间的 ms（峰谷测试用）。 */
+function msAt(iso) {
+  return Date.parse(iso)
 }
 
 function usageEvent(seq, time, provider, model, usage) {
@@ -40,7 +52,8 @@ function usageEvent(seq, time, provider, model, usage) {
 
 /**
  * 造一份 session 用量。
- * entries: [{day, provider, model, usage}]
+ * entries: [{day, time?, provider, model, usage}]
+ * 给了 time（ISO 字符串）就用它，否则用 day 的 UTC 正午。
  */
 function makeSession(id, spec = {}) {
   const {
@@ -53,7 +66,13 @@ function makeSession(id, spec = {}) {
     entries = [],
   } = spec
   const events = entries.map((entry, index) =>
-    usageEvent(index, msOf(entry.day), entry.provider ?? 'opencode-go', entry.model ?? 'deepseek-v4.1-flash', entry.usage),
+    usageEvent(
+      index,
+      typeof entry.time === 'string' ? msAt(entry.time) : msOf(entry.day),
+      entry.provider ?? 'opencode-go',
+      entry.model ?? 'deepseek-v4.1-flash',
+      entry.usage,
+    ),
   )
   const usage = extractSessionUsage({ id, createdAt, cwd, parentSession, delegationDepth }, events, {
     timeZone: TZ,
@@ -212,6 +231,7 @@ test('byModel：按 tokens 降序、share 0..1、未定价模型成本 0 并进 
     usdToCny: 7.1,
     matchedModels: 1,
     unmatchedModels: ['mystery/unknown-model'],
+    timeAware: false,
   })
   const shareSum = body.byModel.reduce((sum, row) => sum + row.share, 0)
   assert.equal(Number(shareSum.toFixed(4)), 1)
@@ -331,7 +351,13 @@ test('空数据：所有字段存在且为零值/null，仍然满足 wire 形状
     topModel: null,
     projectedMonthUsd: 0,
   })
-  assert.deepEqual(body.prices, { currency: 'USD', usdToCny: 7.1, matchedModels: 0, unmatchedModels: [] })
+  assert.deepEqual(body.prices, {
+    currency: 'USD',
+    usdToCny: 7.1,
+    matchedModels: 0,
+    unmatchedModels: [],
+    timeAware: false,
+  })
   assert.equal(body.today.totals.requests, 0)
   assert.equal(body.yesterday.totals.requests, 0)
 })
@@ -450,7 +476,13 @@ test('wire schema：CONTRACT 3.2 的字段齐全、类型正确、顺序符合�
   ]) {
     assert.ok(Object.hasOwn(body.highlights, key), `highlights 缺少 ${key}`)
   }
-  assert.deepEqual(Object.keys(body.prices).sort(), ['currency', 'matchedModels', 'unmatchedModels', 'usdToCny'])
+  assert.deepEqual(Object.keys(body.prices).sort(), [
+    'currency',
+    'matchedModels',
+    'timeAware',
+    'unmatchedModels',
+    'usdToCny',
+  ])
   // daily 升序 / byModel 与 sessions 降序
   const dayList = body.daily.map((row) => row.day)
   assert.deepEqual(dayList, [...dayList].sort())
@@ -469,6 +501,112 @@ test('零用量会话：sessionsScanned 计入索引总数，sessions 只算范�
   assert.equal(body.totals.requests, 1)
   assert.deepEqual(body.sessions.map((row) => row.id), ['s1'], '零用量会话不进排行')
   assert.equal(body.byProject.length, 1, '零用量会话不进项目分布')
+})
+
+test('峰谷价：峰/闲两桶分别计价后加总，不取平均（跨 session / 跨每日 / 范围过滤）', () => {
+  const NOW_1029 = Date.parse('2026-10-29T12:00:00Z')
+  // 2026-10-29 是周四：02:00Z 峰时、05:00Z 闲时。
+  const peakSession = makeSession('peak', {
+    entries: [
+      {
+        time: '2026-10-29T02:00:00Z',
+        provider: 'deepseek-account',
+        model: 'deepseek-flash',
+        usage: counters({
+          inputTokens: 2_000_000,
+          outputTokens: 1_000_000,
+          cacheWriteTokens: 1_000_000,
+          totalTokens: 4_000_000,
+        }),
+      },
+    ],
+  })
+  const offSession = makeSession('off', {
+    entries: [
+      {
+        time: '2026-10-29T05:00:00Z',
+        provider: 'deepseek-account',
+        model: 'deepseek-flash',
+        usage: counters({ inputTokens: 1_000_000, cacheReadTokens: 2_000_000, totalTokens: 3_000_000 }),
+      },
+    ],
+  })
+  // 范围外（10-20 峰时）：days=7 不应计入，但 days=0 / last30 应计入。
+  const outside = makeSession('outside', {
+    entries: [
+      {
+        time: '2026-10-20T02:00:00Z',
+        provider: 'deepseek-account',
+        model: 'deepseek-flash',
+        usage: counters({ inputTokens: 10_000_000, totalTokens: 10_000_000 }),
+      },
+    ],
+  })
+  const sessions = [peakSession, offSession, outside]
+  const body = aggregate(sessions, { days: 7 }, { now: NOW_1029, prices: PEAK_PRICES })
+
+  // 峰：2M input * 0.30 + 1M output * 1.2 + 1M cacheWrite * 0 = 1.8
+  // 闲：1M input * 0.15 + 2M cacheRead * 0.003        = 0.156
+  const peakCost = 2 * 0.3 + 1 * 1.2
+  const offPeakCost = 1 * 0.15 + 2 * 0.003
+  const expected = peakCost + offPeakCost // 1.956
+  // 若错误地对峰谷价取平均：input 0.225*3M + output 0.9*1M + cacheRead 0.0045*2M = 1.584
+  const averaged = 3 * 0.225 + 1 * 0.9 + 2 * 0.0045
+  assert.notEqual(Number(expected.toFixed(6)), Number(averaged.toFixed(6)))
+
+  assert.deepEqual(body.range, { days: 7, startDay: '2026-10-23', endDay: '2026-10-29' })
+  assert.equal(body.totals.costUsd, Number(expected.toFixed(6)))
+  assert.equal(body.totals.totalTokens, 7_000_000, 'tokens 展示口径不变')
+  assert.equal(body.byModel[0].key, 'deepseek-account/deepseek-flash')
+  assert.equal(body.byModel[0].priced, true)
+  assert.equal(body.byModel[0].costUsd, Number(expected.toFixed(6)))
+  assert.equal(body.today.day, '2026-10-29')
+  assert.equal(body.today.costUsd, Number(expected.toFixed(6)))
+  const todayRow = body.daily.find((row) => row.day === '2026-10-29')
+  assert.equal(todayRow.costUsd, Number(expected.toFixed(6)))
+  assert.equal(todayRow.totals.totalTokens, 7_000_000)
+  // 单会话成本分别按自己的桶算
+  const byId = Object.fromEntries(body.sessions.map((row) => [row.id, row.costUsd]))
+  assert.equal(byId.peak, Number(peakCost.toFixed(6)))
+  assert.equal(byId.off, Number(offPeakCost.toFixed(6)))
+  // 峰谷价响应标记
+  assert.equal(body.prices.timeAware, true)
+  assert.equal(typeof body.prices.peakWindow, 'string')
+  assert.match(body.prices.peakWindow, /09:00-12:00/u)
+
+  // days=0：全历史把范围外的 3.0 也算进来
+  const all = aggregate(sessions, { days: 0 }, { now: NOW_1029, prices: PEAK_PRICES })
+  assert.equal(all.totals.costUsd, Number((expected + 3).toFixed(6)))
+  assert.equal(all.totals.totalTokens, 17_000_000)
+  // last30 包含 10-20
+  assert.equal(body.last30Days.costUsd, Number((expected + 3).toFixed(6)))
+  assert.equal(body.last7Days.costUsd, Number(expected.toFixed(6)))
+})
+
+test('平铺价回归：opencode-go 四类 token 成本与旧 computeCost 完全一致', () => {
+  const session = makeSession('flat', {
+    entries: [
+      {
+        day: '2026-10-26',
+        usage: counters({
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 1_000_000,
+          cacheWriteTokens: 1_000_000,
+          totalTokens: 4_000_000,
+        }),
+      },
+    ],
+  })
+  const body = aggregate([session], { days: 7 })
+  const legacy = computeCost(
+    { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000 },
+    PRICES['opencode-go/deepseek-v4.1-flash'],
+  )
+  assert.equal(body.byModel[0].costUsd, Number(legacy.toFixed(6)))
+  assert.equal(body.totals.costUsd, Number(legacy.toFixed(6)))
+  assert.equal(body.prices.timeAware, false)
+  assert.equal('peakWindow' in body.prices, false, '没有峰谷价时不给 peakWindow')
 })
 
 test('工具函数：日键加减 / 天数差 / 月天数 / 连续天数', () => {

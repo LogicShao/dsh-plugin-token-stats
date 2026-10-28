@@ -123,7 +123,7 @@ function makeLogger() {
 async function tempCacheFile(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'token-stats-store-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
-  return { dir, file: path.join(dir, 'usage-index.v1.json') }
+  return { dir, file: path.join(dir, 'usage-index.v2.json') }
 }
 
 function makeStore(persistence, sessions, cacheFile, overrides = {}) {
@@ -163,12 +163,17 @@ test('首次刷新：读全部会话、写原子缓存、汇总可查', async (t
 
   const raw = await readFile(file, 'utf8')
   const parsed = JSON.parse(raw)
-  assert.equal(parsed.version, 1)
+  assert.equal(parsed.version, 2, '缓存格式升级到 v2')
   assert.deepEqual(Object.keys(parsed.sessions).sort(), ['s1', 's2'])
   assert.equal(parsed.sessions.s1.fingerprint.eventCount, 1)
   assert.equal(parsed.sessions.s1.requests, 1)
   assert.equal(typeof parsed.savedAt, 'number')
-  assert.deepEqual(await readdir(dir), ['usage-index.v1.json'], '临时文件已被 rename 掉，不留垃圾')
+  // v2 必须带峰谷分桶字段（缺了会被判损坏重建）
+  assert.equal(typeof parsed.sessions.s1.modelsPeak, 'object')
+  assert.equal(typeof parsed.sessions.s1.modelsOffPeak, 'object')
+  assert.equal(typeof parsed.sessions.s1.dailyModelsPeak, 'object')
+  assert.equal(typeof parsed.sessions.s1.dailyModelsOffPeak, 'object')
+  assert.deepEqual(await readdir(dir), ['usage-index.v2.json'], '临时文件已被 rename 掉，不留垃圾')
   store.dispose()
 })
 
@@ -218,7 +223,7 @@ test('缓存跨实例命中：指纹一致时零次日志读取', async (t) => {
   second.store.dispose()
 })
 
-test('坏缓存：JSON 损坏 / 版本不符都忽略重建', async (t) => {
+test('坏缓存：JSON 损坏 / 版本不符 / 缺 v2 分桶字段都忽略重建', async (t) => {
   const persistence = makePersistence()
   putSession(persistence, 's1', { entries: [{ time: BASE_TIME, usage: { inputTokens: 100, totalTokens: 100 } }] })
   const { file } = await tempCacheFile(t)
@@ -230,18 +235,73 @@ test('坏缓存：JSON 损坏 / 版本不符都忽略重建', async (t) => {
   assert.equal(persistence.calls.open.length, 1)
   assert.ok(broken.logger.lines.warn.some((line) => line.includes('缓存 JSON 损坏')))
   const rebuilt = JSON.parse(await readFile(file, 'utf8'))
-  assert.equal(rebuilt.version, 1)
+  assert.equal(rebuilt.version, 2)
   assert.equal(rebuilt.sessions.s1.requests, 1)
   broken.store.dispose()
 
-  await writeFile(file, JSON.stringify({ version: 99, sessions: { s1: {} } }), 'utf8')
-  const opensBefore = persistence.calls.open.length
+  // 版本不符（v1 内容写在 v2 文件名下）：忽略重建
+  await writeFile(file, JSON.stringify({ version: 1, sessions: { s1: {} } }), 'utf8')
+  let opensBefore = persistence.calls.open.length
   const stale = makeStore(persistence, makeSessions(), file)
   const staleBody = await stale.store.getSummary({ days: 0 })
   assert.equal(staleBody.totals.requests, 1)
   assert.equal(persistence.calls.open.length, opensBefore + 1, '版本不符 → 重建')
   assert.ok(stale.logger.lines.warn.some((line) => line.includes('缓存版本或结构不符')))
   stale.store.dispose()
+
+  // v2 版本号但缺峰谷分桶字段（结构不完整）：同样当损坏重建
+  await writeFile(
+    file,
+    JSON.stringify({
+      version: 2,
+      savedAt: 1,
+      sessions: {
+        s1: {
+          id: 's1',
+          header: { id: 's1' },
+          models: {},
+          daily: {},
+          dailyModels: {},
+          fingerprint: { sizeBytes: 101, eventCount: 1, lastSeq: 0 },
+        },
+      },
+    }),
+    'utf8',
+  )
+  opensBefore = persistence.calls.open.length
+  const incomplete = makeStore(persistence, makeSessions(), file)
+  const incompleteBody = await incomplete.store.getSummary({ days: 0 })
+  assert.equal(incompleteBody.totals.requests, 1)
+  assert.equal(persistence.calls.open.length, opensBefore + 1, '缺 v2 字段 → 重建')
+  assert.ok(
+    incomplete.logger.lines.warn.some((line) => line.includes('缓存条目结构不完整')),
+    '结构不完整要告警',
+  )
+  incomplete.store.dispose()
+})
+
+test('旧 v1 缓存文件不读取：只认 usage-index.v2.json', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'token-stats-v1-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const v1File = path.join(dir, 'usage-index.v2.json')
+  const v2File = path.join(dir, 'usage-index.v2.json')
+  // 旧文件里放一份「有效但本插件不会读」的 v1 缓存，应被完全忽略
+  await writeFile(
+    v1File,
+    JSON.stringify({ version: 1, savedAt: 1, sessions: { ghost: { id: 'ghost', fingerprint: {}, requests: 99 } } }),
+    'utf8',
+  )
+  const persistence = makePersistence()
+  putSession(persistence, 's1', { entries: [{ time: BASE_TIME, usage: { inputTokens: 100, totalTokens: 100 } }] })
+  const { store } = makeStore(persistence, makeSessions(), v2File)
+  const body = await store.getSummary({ days: 0 })
+  assert.equal(body.index.sessions, 1, '只索引真实会话，不受旧 v1 缓存影响')
+  assert.equal(body.totals.sessionsScanned, 1)
+  assert.equal(persistence.calls.open.length, 1)
+  const written = JSON.parse(await readFile(v2File, 'utf8'))
+  assert.equal(written.version, 2)
+  assert.deepEqual(Object.keys(written.sessions), ['s1'])
+  store.dispose()
 })
 
 test('单会话读取失败：其余会话照常统计，失败会话只警告', async (t) => {
@@ -382,7 +442,7 @@ test('缓存写入失败只警告，查询照常返回', async (t) => {
   t.after(() => rm(dir, { recursive: true, force: true }))
   const blocked = path.join(dir, 'not-a-dir')
   await writeFile(blocked, 'x', 'utf8')
-  const cacheFile = path.join(blocked, 'usage-index.v1.json')
+  const cacheFile = path.join(blocked, 'usage-index.v2.json')
   const { store, logger } = makeStore(persistence, makeSessions(), cacheFile)
   const body = await store.getSummary({ days: 0 })
   assert.equal(body.totals.requests, 1)

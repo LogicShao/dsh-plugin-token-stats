@@ -167,6 +167,56 @@ test('坏事件不抛错；header 缺字段安全归一', () => {
   assert.equal(extractSessionUsage({ id: 's6' }, undefined).requests, 0)
 })
 
+test('峰谷分桶：事件时间决定 modelsPeak/OffPeak，总和口径不变', () => {
+  // 2026-10-29 周四：02:00Z 峰时、05:00Z 闲时；2026-10-31 周六任意时刻闲时。
+  const peakTime = Date.parse('2026-10-29T02:00:00Z')
+  const offPeakTime = Date.parse('2026-10-29T05:00:00Z')
+  const weekendTime = Date.parse('2026-10-31T02:00:00Z')
+  const events = [
+    usageEvent(0, peakTime, 'deepseek-account', 'deepseek-flash', { inputTokens: 100, outputTokens: 10, totalTokens: 110 }),
+    usageEvent(1, offPeakTime, 'deepseek-account', 'deepseek-flash', { inputTokens: 50, outputTokens: 5, totalTokens: 55 }),
+    usageEvent(2, weekendTime, 'deepseek-account', 'deepseek-flash', { inputTokens: 7, outputTokens: 1, totalTokens: 8 }),
+  ]
+  const usage = extractSessionUsage({ id: 's-peak' }, events, { timeZone: 'UTC' })
+  const key = 'deepseek-account/deepseek-flash'
+  assert.equal(usage.models[key].requests, 3, 'models 仍是总和')
+  assert.equal(usage.models[key].inputTokens, 157)
+  assert.equal(usage.modelsPeak[key].requests, 1)
+  assert.equal(usage.modelsPeak[key].inputTokens, 100)
+  assert.equal(usage.modelsOffPeak[key].requests, 2)
+  assert.equal(usage.modelsOffPeak[key].inputTokens, 57, '闲时含周末事件')
+  assert.equal(usage.modelsPeak[key].inputTokens + usage.modelsOffPeak[key].inputTokens, usage.models[key].inputTokens)
+
+  const day = '2026-10-29'
+  assert.equal(usage.daily[day].requests, 2)
+  assert.equal(usage.dailyModels[day][key].requests, 2)
+  assert.equal(usage.dailyModelsPeak[day][key].requests, 1)
+  assert.equal(usage.dailyModelsOffPeak[day][key].requests, 1)
+  assert.equal(
+    usage.dailyModelsPeak[day][key].totalTokens + usage.dailyModelsOffPeak[day][key].totalTokens,
+    usage.dailyModels[day][key].totalTokens,
+  )
+  assert.equal(usage.dailyModels['2026-10-31'][key].requests, 1, '周末事件在闲时桶的日表')
+  assert.equal(usage.dailyModelsPeak['2026-10-31'], undefined)
+
+  // 时间缺失的 usage 事件：按闲时桶兜底（不虚高成本），仍计入总和
+  const noTime = {
+    type: 'assistant/message',
+    seq: 3,
+    data: { message: { source: { provider: 'deepseek-account', model: 'deepseek-flash' } }, usage: { inputTokens: 3 } },
+  }
+  const withMissingTime = extractSessionUsage({ id: 's-peak' }, [noTime], { timeZone: 'UTC' })
+  assert.equal(withMissingTime.models[key].inputTokens, 3)
+  assert.equal(withMissingTime.modelsPeak[key], undefined)
+  assert.equal(withMissingTime.modelsOffPeak[key].inputTokens, 3)
+
+  // mergeUsage 同步合并峰谷桶
+  const merged = mergeUsage(usage, withMissingTime)
+  assert.equal(merged.modelsPeak[key].inputTokens, 100)
+  assert.equal(merged.modelsOffPeak[key].inputTokens, 60)
+  assert.equal(merged.models[key].inputTokens, 160)
+})
+
 test('mergeUsage 合并磁盘基线与活会话 overlay', () => {
   const header = { id: 's7', createdAt: 1, cwd: 'C:\\a', parentSession: 'parent', delegationDepth: 1 }
   const base = extractSessionUsage(header, [usageEvent(0, TZ_BOUNDARY, 'p', 'm', { inputTokens: 10, outputTokens: 1 })], {

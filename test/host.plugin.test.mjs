@@ -62,7 +62,7 @@ function sampleBody() {
     prices: PRICES,
     currency: 'USD',
     usdToCny: 7.1,
-    index: { sessions: 1, events: 1, building: false, stale: false, cacheFile: 'usage-index.v1.json' },
+    index: { sessions: 1, events: 1, building: false, stale: false, cacheFile: 'usage-index.v2.json' },
   })
 }
 
@@ -374,7 +374,7 @@ test('config：默认值、DSH_HOME、访问器 unwrap、非法值回落', () =>
 async function tempCache(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'token-stats-plugin-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
-  return path.join(dir, 'usage-index.v1.json')
+  return path.join(dir, 'usage-index.v2.json')
 }
 
 function fakePersistence() {
@@ -533,6 +533,109 @@ test('插件入口：完整服务下注册路由 + 工具，路由返回统计',
   assert.match(toolValue.text, /token-stats 用量汇总/u)
   assert.ok(toolValue.text.includes('1,200'))
 
+  ctx.dispose()
+})
+
+test('插件入口：cordis config 的官方峰谷价生效（峰/闲分桶成本 + timeAware）', async (t) => {
+  const cacheFile = await tempCache(t)
+  // 两个 session、同一模型：一个峰时（周四 02:00Z）、一个闲时（周四 05:00Z），各 1M input。
+  const header = (id) => ({
+    id,
+    version: 4,
+    createdAt: NOW - 1000,
+    cwd: 'D:\\proj\\peak-demo',
+    parentSession: null,
+    delegationDepth: 0,
+  })
+  const records = new Map([
+    [
+      'peak',
+      {
+        header: header('peak'),
+        events: [
+          {
+            type: 'assistant/message',
+            seq: 0,
+            time: Date.parse('2026-10-29T02:00:00Z'),
+            data: {
+              message: { source: { provider: 'deepseek-account', model: 'deepseek-flash' } },
+              usage: { inputTokens: 1_000_000, totalTokens: 1_000_000 },
+            },
+          },
+        ],
+        sizeBytes: 201,
+        eventCount: 1,
+        revision: 'rev-peak',
+      },
+    ],
+    [
+      'off',
+      {
+        header: header('off'),
+        events: [
+          {
+            type: 'assistant/message',
+            seq: 0,
+            time: Date.parse('2026-10-29T05:00:00Z'),
+            data: {
+              message: { source: { provider: 'deepseek-account', model: 'deepseek-flash' } },
+              usage: { inputTokens: 1_000_000, totalTokens: 1_000_000 },
+            },
+          },
+        ],
+        sizeBytes: 202,
+        eventCount: 1,
+        revision: 'rev-off',
+      },
+    ],
+  ])
+  const persistence = {
+    records,
+    async list() {
+      return [...records.values()].map((record) => ({
+        header: record.header,
+        sizeBytes: record.sizeBytes,
+        eventCount: record.eventCount,
+        revision: record.revision,
+      }))
+    },
+    async open(id) {
+      const record = records.get(id)
+      return {
+        header: record.header,
+        async read() {
+          return { events: record.events }
+        },
+        async close() {},
+      }
+    },
+  }
+  const ctx = makeFakeCtx({ sessionPersistence: persistence, sessions: { get: () => undefined, list: () => [] } })
+  applyPlugin(ctx, {
+    cacheFile,
+    refreshOnStart: false,
+    refreshIntervalMs: 600_000,
+    timeZone: 'UTC',
+    prices: {
+      'deepseek-account/deepseek-flash': {
+        peak: { input: 0.3, cacheRead: 0.006, output: 1.2, cacheWrite: 0 },
+        offPeak: { input: 0.15, cacheRead: 0.003, output: 0.6, cacheWrite: 0 },
+      },
+    },
+  })
+  const body = await readJson(await ctx.route.value.fetch(new Request('http://x/api/token-stats.summary?days=0')))
+  // 峰 1M * 0.30 + 闲 1M * 0.15 = 0.45（若取平均会是 0.225*2M = 0.45 恰好相同，
+  // 所以这里再断言两个会话各自的成本是 0.3 / 0.15，证明分桶而非平均）
+  assert.equal(body.totals.costUsd, 0.45)
+  const costs = Object.fromEntries(body.sessions.map((row) => [row.id, row.costUsd]))
+  assert.deepEqual(costs, { peak: 0.3, off: 0.15 })
+  assert.equal(body.byModel[0].priced, true)
+  assert.equal(body.byModel[0].costUsd, 0.45)
+  assert.equal(body.prices.timeAware, true)
+  assert.match(body.prices.peakWindow, /09:00-12:00/u)
+  // 工具文本里能看到汇总（成本数字按 6 位小数格式化）
+  const toolValue = await ctx.tool.value.execute({ days: 0 })
+  assert.ok(toolValue.text.includes('0.45'))
   ctx.dispose()
 })
 
