@@ -310,8 +310,8 @@ function apply(ctx) {
     inject: () => ({ /* 传给组件的 props，可含 hooks */ }),
   }, TokenStatsSection));
 
-  // 侧边栏底部快捷按钮（打开同一个仪表盘 Modal）
-  // ... 见 refs/client-slots.txt 中 sidebar.footer.action / shell.overlay 的完整契约
+  // 入口约定：只注册 settings.section 一个入口。
+  // 不再注册 sidebar.footer.action / shell.overlay（避免两个入口并存）。
 }
 ```
 

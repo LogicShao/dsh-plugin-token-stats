@@ -41,7 +41,6 @@ const BASELINE_MODULES = new Set([
 
 const EXPECTED_MODULES = [
   "@deepseek-ai/dsh-client-store",
-  "@deepseek-ai/dsh-client-ui-primitives",
   "react",
   "react/jsx-runtime",
 ];
@@ -807,13 +806,12 @@ test("styles are injected once with the ts_ prefix and theme variables", async (
   assert.doesNotMatch(tag.textContent, /#[0-9a-f]{3,8}\b/i, "no hard-coded hex colors in the stylesheet");
 });
 
-test("apply registers settings.section, shell.overlay, and sidebar.footer.action", async () => {
+test("apply registers exactly one entry: settings.section", async () => {
   const host = await startHost();
   const names = host.ctx.registeredSlots.map((entry) => entry.options.name);
-  assert.ok(names.includes("settings.section"));
-  assert.ok(names.includes("shell.overlay"));
-  assert.ok(names.includes("sidebar.footer.action"));
-  assert.deepEqual([...new Set(names)].sort(), ["settings.section", "shell.overlay", "sidebar.footer.action"]);
+  // 只保留设置页入口：侧边栏按钮与弹窗已移除，避免两套入口并存。
+  assert.deepEqual(names, ["settings.section"]);
+  assert.deepEqual(host.ctx.slotInjections, ["settings.section"]);
 
   const section = findRegistration(host, "settings.section");
   assert.equal(section.options.id, "token-stats");
@@ -821,21 +819,13 @@ test("apply registers settings.section, shell.overlay, and sidebar.footer.action
   assert.equal(section.options.locale, "token-stats");
   assert.equal(typeof section.options.label, "function");
   assert.equal(section.options.label(), "Token 用量");
-  assert.equal(typeof section.options.inject, "function");
   assert.equal(typeof section.component, "function");
 
-  const overlay = findRegistration(host, "shell.overlay");
-  assert.equal(overlay.options.id, "token-stats");
-  assert.equal(overlay.options.locale, "token-stats");
-
-  const footer = findRegistration(host, "sidebar.footer.action");
-  assert.equal(footer.options.id, "token-stats");
-  assert.equal(footer.options.label(), "Token 用量");
-  assert.deepEqual(host.ctx.slotInjections.sort(), ["settings.section", "shell.overlay", "sidebar.footer.action"]);
-  for (const registration of host.ctx.registeredSlots) {
-    const face = registration.options.inject();
-    assert.equal(typeof face, "object");
-  }
+  const face = section.options.inject();
+  assert.equal(typeof face.setDays, "function");
+  assert.equal(typeof face.refresh, "function");
+  assert.equal(typeof face.exportCsv, "function");
+  assert.equal(typeof face.hooks.stats.getSnapshot, "function");
 });
 
 test("locale dictionaries are symmetric, complete, and cover every literal t() key", async () => {
@@ -988,52 +978,6 @@ test("settings section renders loading, empty, and error states", async () => {
   assert.match(error, /boom/);
   assert.match(error, /class="ts_error"/);
   assert.match(error, /重试/);
-});
-
-test("sidebar footer action renders an icon rail button and a wide button", async () => {
-  const host = await startHost();
-  const rail = renderRegistration(host, "sidebar.footer.action", { wide: false });
-  assert.match(rail, /class="ts_footer"/);
-  assert.match(rail, /class="ts_footerBtn"/);
-  assert.match(rail, /aria-label="Token 用量"/);
-  assert.doesNotMatch(rail, /class="ts_footerLabel"/, "rail mode must not render the label");
-
-  const wide = renderRegistration(host, "sidebar.footer.action", { wide: true });
-  assert.match(wide, /class="ts_footerLabel"/);
-  assert.match(wide, /Token 用量/);
-
-  const face = findRegistration(host, "sidebar.footer.action").options.inject();
-  assert.equal(typeof face.openDashboard, "function");
-  face.openDashboard();
-  assert.equal(findRegistration(host, "sidebar.footer.action").options.inject().hooks.stats.getSnapshot().open, true);
-});
-
-test("shell overlay renders nothing while closed and the shared dashboard while open", async () => {
-  const host = await startHost();
-  setStoreState(host, { open: false });
-  assert.equal(renderRegistration(host, "shell.overlay"), "");
-
-  setStoreState(host, { open: true });
-  const html = renderRegistration(host, "shell.overlay");
-  assert.match(html, /class="test-modal"/);
-  assert.match(html, /class="ts_dash"/);
-  assert.match(html, /Token 用量统计/);
-
-  const face = findRegistration(host, "shell.overlay").options.inject();
-  assert.equal(typeof face.closeDashboard, "function");
-  face.closeDashboard();
-  assert.equal(findRegistration(host, "shell.overlay").options.inject().hooks.stats.getSnapshot().open, false);
-});
-
-test("overlay degrades to its own modal when primitives.Modal is unavailable", async () => {
-  const host = await startHost({ primitives: {} });
-  setStoreState(host, { open: true });
-  const html = renderRegistration(host, "shell.overlay");
-  assert.match(html, /class="ts_modalMask"/);
-  assert.match(html, /class="ts_modalCard"/);
-  assert.match(html, /class="ts_dash"/);
-  assert.match(html, /Token 用量统计/);
-  assert.match(html, /关闭/);
 });
 
 test("CSV export is quoted, stable, and downloadable from memory", async () => {
