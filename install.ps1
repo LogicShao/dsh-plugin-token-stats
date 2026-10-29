@@ -13,11 +13,25 @@
 param(
   [string]$PluginDir = (Split-Path -Parent $MyInvocation.MyCommand.Path),
   [string]$ProfileDir = (Join-Path $env:USERPROFILE ".dsh\profiles\desktop"),
-  [string]$DshRoot = "D:\software\ai\dsh"
+  [string]$DshRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
 $PluginName = "dsh-plugin-token-stats"
+
+# DSH 安装目录探测：优先 -DshRoot，其次 $env:DSH_ROOT，再试几个常见位置。
+if (-not $DshRoot -and $env:DSH_ROOT) { $DshRoot = $env:DSH_ROOT }
+if (-not $DshRoot) {
+  $pnpmRel = "resources\runtime\primary-runtime\dependencies\pnpm\bin\pnpm.cjs"
+  $candidates = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\dsh"),
+    (Join-Path $env:LOCALAPPDATA "dsh"),
+    (Join-Path $env:PROGRAMFILES "DSH"),
+    (Join-Path ${env:ProgramFiles(x86)} "DSH"),
+    "D:\software\ai\dsh"
+  ) | Where-Object { $_ -and (Test-Path $_) }
+  $DshRoot = $candidates | Where-Object { Test-Path (Join-Path $_ $pnpmRel) } | Select-Object -First 1
+}
 
 function Fail($message) { Write-Host "✗ $message" -ForegroundColor Red; exit 1 }
 function Ok($message) { Write-Host "✓ $message" -ForegroundColor Green }
@@ -32,7 +46,7 @@ if (-not (Test-Path $profileJson)) { Fail "找不到 $profileJson" }
 $node = Join-Path $DshRoot "resources\runtime\primary-runtime\dependencies\node\bin\node.exe"
 $pnpm = Join-Path $DshRoot "resources\runtime\primary-runtime\dependencies\pnpm\bin\pnpm.cjs"
 if (-not (Test-Path $node)) { $node = (Get-Command node -ErrorAction SilentlyContinue).Source }
-if (-not (Test-Path $pnpm)) { Fail "找不到 DSH 自带 pnpm：$pnpm（可用 -DshRoot 指定安装目录）" }
+if (-not (Test-Path $pnpm)) { Fail "找不到 DSH 自带 pnpm：$pnpm（用 -DshRoot 指定 DSH 安装目录，或设置环境变量 DSH_ROOT）" }
 Ok "Node: $node"
 Ok "pnpm: $pnpm"
 
@@ -90,6 +104,6 @@ Write-Host ""
 Write-Host "安装完成。下一步：" -ForegroundColor Yellow
 Write-Host "  1. 完全退出 DSH（托盘也退出），再启动；"
 Write-Host "  2. 打开设置 → 插件，确认 $PluginName 已启用；"
-Write-Host "  3. 打开设置 → 「Token 用量」查看仪表盘（侧边栏底部也有快捷按钮）。"
+Write-Host "  3. 打开设置 → 「Token 用量」查看仪表盘。"
 Write-Host ""
 Write-Host "回滚：把 $profileJson.bak-$stamp 换回 package.json，再跑一次 pnpm install 并重启。" -ForegroundColor DarkGray

@@ -1,0 +1,30 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - name: Syntax check
+        run: node --check lib/client.js && node --check lib/index.js
+      - name: Run tests
+        # 逐文件执行，避免 runner 差异（本机沙箱里 node --test <dir> 会 spawn EPERM）。
+        run: |
+          set -e
+          for file in test/*.test.mjs; do
+            echo "::group::$file"
+            node "$file"
+            echo "::endgroup::"
+          done

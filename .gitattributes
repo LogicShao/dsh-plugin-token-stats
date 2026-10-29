@@ -1,0 +1,7 @@
+# 统一换行符：仓库内部用 LF，Windows 检出按需转换。
+# install.ps1 保持 CRLF，兼容 Windows PowerShell 5.1。
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.zstd binary

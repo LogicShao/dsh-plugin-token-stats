@@ -9,7 +9,7 @@
 
 ## 0. 仓库与文件所有权
 
-仓库根：`D:\proj\agent_workspace\dsh-plugin-token-stats`
+仓库根：本仓库根目录（下文用 `<repo-root>` 指代）
 
 | 文件/目录 | 归属 | 说明 |
 |---|---|---|
@@ -28,8 +28,8 @@
 
 ## 1. 环境事实（已核实）
 
-- 安装的 DSH：`D:\software\ai\dsh`，运行时版本 `0.2.1-rc.3`，Electron 桌面壳 + Web GUI（`http://127.0.0.1:58223`）。
-- 完整解包源码（可直接 grep/read）：`D:\proj\agent_workspace\.tmp\dsh-src\dsh\node_modules\@deepseek-ai\`
+- 安装的 DSH：Windows 下通常是 `<DSH 安装目录>`（例如 `D:\software\ai\dsh`），运行时版本 `0.2.1-rc.3`；Electron 桌面壳 + Web GUI（端口随机，每次启动不同）。
+- DSH 的 Electron 应用源码在安装目录的 `resources/` 下（`app.asar` + `app.asar.unpacked`）。
 - 用户数据：`%USERPROFILE%\.dsh`；会话日志在 `.dsh\sessions\<项目目录>\<会话目录>\session.vN.jsonl.zstd`。
 - 现有两个第三方插件（样式参考）：`..\dsh-plugin-context-window`、`..\dsh-plugin-opencode-go`。
 - **第三方插件不能静态 import `@deepseek-ai/*` 包**（profile 里没有这些依赖，Node 解析不到）。

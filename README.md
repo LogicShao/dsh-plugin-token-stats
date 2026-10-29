@@ -31,9 +31,12 @@ DeepSeek Harness（DSH）插件：**跨所有 session 的 token 用量统计 + �
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
+# DSH 装在非默认位置时：
+# powershell -ExecutionPolicy Bypass -File .\install.ps1 -DshRoot "D:\software\ai\dsh"
 ```
 
 脚本会备份 profile 配置、写入 `link:` 依赖与 bundle 条目、用 DSH 自带的 Node + pnpm 安装依赖。
+DSH 安装目录按 `-DshRoot` → 环境变量 `DSH_ROOT` → 常见安装路径的顺序自动探测。
 然后**完全退出 DSH（托盘也退出）再启动**（bundle 层只在启动时读取，刷新页面不够）。
 
 ### 手动
@@ -43,17 +46,18 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```jsonc
    {
      "dependencies": {
-       "dsh-plugin-token-stats": "link:D:/proj/agent_workspace/dsh-plugin-token-stats"
+       "dsh-plugin-token-stats": "link:/path/to/dsh-plugin-token-stats"
      },
      "dsh": { "profile": { "bundles": [ /* ... */, "dsh-plugin-token-stats" ] } }
    }
    ```
+   `link:` 后面写本仓库在本机的绝对路径（Windows 用正斜杠，例如 `link:D:/code/dsh-plugin-token-stats`）。
 
 2. 在 profile 目录用 DSH 自带 pnpm 安装：
 
    ```powershell
    cd "$env:USERPROFILE\.dsh\profiles\desktop"
-   $dsh = "D:\software\ai\dsh"
+   $dsh = "<DSH 安装目录>"
    & "$dsh\resources\runtime\primary-runtime\dependencies\node\bin\node.exe" `
      "$dsh\resources\runtime\primary-runtime\dependencies\pnpm\bin\pnpm.cjs" install
    ```
@@ -149,6 +153,7 @@ lib/index.js          宿主入口（name/apply）
 lib/host/             session 扫描、用量提取、聚合、定价、路由、模型工具
 lib/client.js         浏览器 bundle（手写 ModuleLoader factory，无构建步骤）
 test/                 node:test 单测（不依赖真实 ~/.dsh）
+.github/workflows/    CI（push / PR 时逐文件跑测试）
 ```
 
 ## 验证记录
@@ -161,6 +166,19 @@ test/                 node:test 单测（不依赖真实 ~/.dsh）
 - **真实宿主加载**：在隔离 `DSH_HOME` + 隔离 profile 的 DSH 实例里启动，确认
   客户端入口出现在 boot graph 并通过组合校验、`/plugins/dsh-plugin-token-stats/client.js` 返回 200，
   宿主侧 `/api/token-stats.summary` 返回 200 与契约一致的 JSON（含 `prices.timeAware` / `peakWindow`）。
+
+## 版本与发布
+
+- 版本历史见 [CHANGELOG.md](CHANGELOG.md)，每个发布版本在 git 上打 `vX.Y.Z` tag。
+- 发布到你自己的 Git 托管（GitHub / Gitee / 自建均可）：
+
+  ```bash
+  git remote add origin <你的仓库地址>
+  git push -u origin main
+  git push --tags          # 推送版本 tag
+  ```
+
+- 本仓库已内置 CI（`.github/workflows/test.yml`），push / PR 时自动逐文件跑测试。
 
 ## License
 
