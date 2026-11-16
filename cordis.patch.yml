@@ -14,8 +14,9 @@
         # 未命中的模型按 0 计价，并在响应里列进 prices.unmatchedModels。
         #
         # 两种价格形状都支持：
-        #   平铺：{ input, output, cacheRead, cacheWrite }  —— 单一价（opencode-go 订阅通道）
-        #   峰谷：{ peak: {...}, offPeak: {...} }           —— 官方 DeepSeek API 峰/闲双价
+        #   平铺：{ input, output, cacheRead, cacheWrite }  —— 单一价（订阅/固定折算通道）
+        #   峰谷：{ peak: {...}, offPeak: {...} }           —— 官方 DeepSeek API 与
+        #                                                     OpenCode Go 的 DeepSeek 模型峰/闲双价
         #
         # 计费字段映射（官方口径）：
         #   input      = 缓存未命中的输入 token
@@ -29,7 +30,10 @@
         # 已知偏差：中国法定节假日官方按闲时计费，本实现没有节假日日历，
         # 节假日白天会按峰时估算（偏保守，不取平均价）。
         #
-        # 价格来源：https://api-docs.deepseek.com/quick_start/pricing （USD 表，2026-10-28 核对）
+        # 价格来源：
+        #   - DeepSeek 官方：https://api-docs.deepseek.com/quick_start/pricing （USD 表，2026-10-28 核对）
+        #   - OpenCode Go：https://opencode.ai/docs/console/go/ 的 Go 价目表（2026-11-11 核对）；
+        #     DeepSeek 模型在 Go 上按官方 API 同价计费，故用峰谷形状。
         prices:
           # 官方 DeepSeek API：deepseek-flash = V4.1-Flash-1017
           deepseek-account/deepseek-flash:
@@ -78,12 +82,23 @@
               cacheRead: 0.003
               output: 0.6
               cacheWrite: 0
-          # 以下两条是 opencode-go 订阅通道，价格是订阅侧折算的固定单价，保持不变。
+          # opencode-go 订阅通道：DeepSeek 模型的 token 单价与官方 API 一致
+          # （Go 价目表把 DeepSeek 分 Peak / Off-Peak 两档，缓存写官方无此项）。
+          # DeepSeek V4.1 Flash（1017 checkpoint）：闲时 $0.15/$0.60、缓存读 $0.003；
+          # 峰时 ×2 = $0.30/$1.20、缓存读 $0.006。
           opencode-go/deepseek-v4.1-flash:
-            input: 0.15
-            output: 0.6
-            cacheRead: 0.015
-            cacheWrite: 0.15
+            peak:
+              input: 0.30
+              cacheRead: 0.006
+              output: 1.2
+              cacheWrite: 0
+            offPeak:
+              input: 0.15
+              cacheRead: 0.003
+              output: 0.6
+              cacheWrite: 0
+          # 旧模型 id（Go 已不再列出的 deepseek-v4-flash）：保留旧订阅折算平铺价，
+          # 只用于历史 session 的成本估算，新会话不会再用到。
           opencode-go/deepseek-v4-flash:
             input: 0.1
             output: 0.4

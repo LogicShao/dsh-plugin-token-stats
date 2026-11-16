@@ -2,6 +2,23 @@
 
 本插件遵循 [语义化版本](https://semver.org/lang/zh-CN/)；每个发布版本在 git 上打 `vX.Y.Z` tag。
 
+## 0.2.5 — 2026-11-12
+
+### 修复
+
+- **OpenCode Go 的 DeepSeek V4.1 Flash（1017 checkpoint）改为官方峰谷价**：默认价原来是平铺价
+  `input 0.15 / output 0.6 / cacheRead 0.015 / cacheWrite 0.15`，其中缓存读与缓存写和 Go 官方价目
+  不一致（官方缓存读 $0.003、峰时 $0.006，缓存写官方无此项）。现按
+  [Go 价目表](https://opencode.ai/docs/console/go/)（2026-11-11 核对）改为 `peak` / `offPeak` 双价；
+  历史 session 会按每条请求的发生时间重新落峰/闲桶计价，不需要等缓存重建。
+- 默认价配置增加回归测试：解析 `cordis.patch.yml`，断言该模型保持峰谷价、峰/闲分桶成本正确。
+
+### 说明
+
+- `opencode-go/deepseek-v4-flash`（旧 id，Go 已不再列出）保留旧平铺价，只用于历史 session 的成本估算。
+- 成本按官方 token 单价估算；Go 订阅的 dollar allowance（`opencode.allowance`）是另一套口径，
+  报表里的 USD 用于横向对比，不代表实际订阅扣费。
+
 ## 0.2.4 — 2026-10-29
 
 ### 发布准备

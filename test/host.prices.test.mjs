@@ -5,6 +5,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   computeCost,
@@ -19,6 +20,8 @@ import {
   timeBucketOf,
 } from '../lib/host/prices.js'
 
+// 平铺价夹具：只用来测平铺形状的计价路径，不代表默认配置。
+// 默认配置见 cordis.patch.yml —— opencode-go 的 DeepSeek 模型已经是峰谷价。
 const RAW_PRICES = {
   'opencode-go/deepseek-v4.1-flash': { input: 0.15, output: 0.6, cacheRead: 0.015, cacheWrite: 0.15 },
   'opencode-go/deepseek-v4-flash': { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0.1 },
@@ -241,4 +244,102 @@ test('findPrice / hasTimeAwarePrices：峰谷条目算命中；timeAware 只在�
   const loose = normalizePrices({ 'deepseek-flash': FLASH_BUCKET })
   assert.equal(findPrice(loose, 'deepseek-account', 'deepseek-flash').matched, true)
   assert.equal(findPrice(loose, 'deepseek-account', 'deepseek-flash').source, 'model')
+})
+
+// ---------------------------------------------------------------------------
+// 默认价配置（cordis.patch.yml）回归 —— 测试不依赖 YAML 库，只解析本仓库用到的子集
+// ---------------------------------------------------------------------------
+
+/** 解析 YAML 标量（number / boolean / 去引号字符串）。 */
+function parseScalar(text) {
+  const value = text.trim()
+  if (/^-?\d+(?:\.\d+)?$/u.test(value)) return Number(value)
+  if (value === 'true') return true
+  if (value === 'false') return false
+  const quoted = /^['"](.*)['"]$/u.exec(value)
+  return quoted === null ? value : quoted[1]
+}
+
+/** 极简缩进块解析：只支持「嵌套 map + 标量」，够读 cordis.patch.yml 的默认价格表。 */
+function parseBlock(lines, indent) {
+  const result = {}
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const trimmed = line.trim()
+    if (trimmed.length === 0 || trimmed.startsWith('#')) continue
+    const lineIndent = line.length - line.trimStart().length
+    if (lineIndent !== indent) continue
+    const match = /^([^\s:#][^:]*):(?:\s+(.*))?$/u.exec(trimmed)
+    if (match === null) continue
+    const [, key, inline] = match
+    if (inline !== undefined && inline.trim().length > 0) {
+      result[key] = parseScalar(inline)
+      continue
+    }
+    const nested = []
+    let cursor = index + 1
+    while (cursor < lines.length) {
+      const child = lines[cursor]
+      const childTrimmed = child.trim()
+      if (childTrimmed.length === 0 || childTrimmed.startsWith('#')) {
+        cursor += 1
+        continue
+      }
+      if (child.length - child.trimStart().length <= indent) break
+      nested.push(child)
+      cursor += 1
+    }
+    const nestedIndent =
+      nested.length === 0 ? indent + 2 : nested[0].length - nested[0].trimStart().length
+    result[key] = parseBlock(nested, nestedIndent)
+    index = cursor - 1
+  }
+  return result
+}
+
+/** 取 cordis.patch.yml 里某个模型键下的价格子块。 */
+function readPriceEntryFromDefaultConfig(source, modelKey) {
+  const lines = source.split(/\r?\n/u)
+  const escaped = modelKey.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+  const pattern = new RegExp(`^(\\s*)${escaped}:\\s*$`, 'u')
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = pattern.exec(lines[index])
+    if (match === null) continue
+    const indent = match[1].length
+    const nested = []
+    let cursor = index + 1
+    while (cursor < lines.length) {
+      const child = lines[cursor]
+      const childTrimmed = child.trim()
+      if (childTrimmed.length === 0 || childTrimmed.startsWith('#')) {
+        cursor += 1
+        continue
+      }
+      if (child.length - child.trimStart().length <= indent) break
+      nested.push(child)
+      cursor += 1
+    }
+    return parseBlock(nested, nested.length === 0 ? indent + 2 : nested[0].length - nested[0].trimStart().length)
+  }
+  return undefined
+}
+
+test('默认价：cordis.patch.yml 里 opencode-go/deepseek-v4.1-flash 使用官方峰谷价', () => {
+  const source = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const entry = readPriceEntryFromDefaultConfig(source, 'opencode-go/deepseek-v4.1-flash')
+  assert.deepEqual(entry, {
+    peak: { input: 0.3, cacheRead: 0.006, output: 1.2, cacheWrite: 0 },
+    offPeak: { input: 0.15, cacheRead: 0.003, output: 0.6, cacheWrite: 0 },
+  })
+  const prices = normalizePrices({ 'opencode-go/deepseek-v4.1-flash': entry })
+  assert.equal(hasTimeAwarePrices(prices), true, 'Go 的 DeepSeek 模型应参与峰/闲分时计价')
+  // 峰时 1M input（$0.30）+ 闲时 1M cacheRead（$0.003）
+  const cost = costOfModelBuckets(
+    prices,
+    'opencode-go/deepseek-v4.1-flash',
+    { inputTokens: 1_000_000, cacheReadTokens: 1_000_000 },
+    { inputTokens: 1_000_000 },
+    { cacheReadTokens: 1_000_000 },
+  )
+  assert.equal(Number(cost.toFixed(6)), 0.303)
 })
