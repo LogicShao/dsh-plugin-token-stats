@@ -91,6 +91,30 @@ function buildDaily() {
   return days;
 }
 
+/** Contiguous daily series of `count` days, for bucket-granularity tests. */
+function buildDailyRange(count, startUtc = Date.UTC(2026, 8, 27)) {
+  const days = [];
+  for (let index = 0; index < count; index += 1) {
+    const date = new Date(startUtc + index * 86400000);
+    const iso = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+    const tokens = 12000 + (index % 7) * 2600 + (index % 3) * 500;
+    const costUsd = Math.round((tokens / 1e6) * 3.2 * 1e6) / 1e6;
+    days.push({
+      day: iso,
+      totals: metric({
+        requests: 1 + (index % 4),
+        inputTokens: 120 + (index % 5) * 10,
+        outputTokens: 300,
+        cacheReadTokens: Math.max(0, tokens - 500),
+        totalTokens: tokens,
+      }),
+      costUsd,
+      costCny: Math.round(costUsd * 7.1 * 1e6) / 1e6,
+    });
+  }
+  return days;
+}
+
 function buildSessions() {
   const rows = [
     {
@@ -769,6 +793,14 @@ if (emitIndex !== -1) {
   screen("ready-zh", MOCK_SUMMARY, { locale: "zh" }, "light");
   screen("ready-zh", MOCK_SUMMARY, { locale: "zh" }, "dark");
   screen("ready-en", MOCK_SUMMARY, { locale: "en" }, "light");
+  const range90 = clone(MOCK_SUMMARY);
+  range90.daily = buildDailyRange(90);
+  range90.range = { ...range90.range, days: 90 };
+  screen("range90-zh", range90, { locale: "zh" }, "light");
+  const rangeMonthly = clone(MOCK_SUMMARY);
+  rangeMonthly.daily = buildDailyRange(400, Date.UTC(2025, 0, 1));
+  rangeMonthly.range = { ...rangeMonthly.range, days: 0 };
+  screen("rangeAll-zh", rangeMonthly, { locale: "zh" }, "light");
   screen("empty-zh", EMPTY_SUMMARY, { locale: "zh" }, "light");
   screen("loading-zh", null, { locale: "zh", state: loadingState }, "light");
   screen("error-zh", null, { locale: "zh", state: errorState }, "light");
@@ -1156,6 +1188,92 @@ test("previewHtml renders the real dashboard synchronously in the ready state", 
   });
   assert.match(error, /加载用量数据失败/);
   assert.match(error, /HTTP 503/);
+});
+
+test("bucketDaily switches day → week → month as the range grows", async () => {
+  const host = await startHost();
+  const { bucketDaily, granularityFor } = host.bundleModule.__test;
+
+  assert.equal(granularityFor(0), "day");
+  assert.equal(granularityFor(45), "day");
+  assert.equal(granularityFor(46), "week");
+  assert.equal(granularityFor(190), "week");
+  assert.equal(granularityFor(191), "month");
+
+  const days30 = buildDailyRange(30);
+  const day = bucketDaily(days30);
+  assert.equal(day.granularity, "day");
+  assert.equal(day.buckets.length, 30);
+  assert.equal(day.buckets[0].startDay, "2026-09-27");
+
+  const days90 = buildDailyRange(90);
+  const week = bucketDaily(days90);
+  assert.equal(week.granularity, "week");
+  assert.equal(week.buckets.length, 14);
+  // Edge buckets stay clipped to the days that exist; interior buckets start on Monday.
+  assert.equal(week.buckets[0].startDay, "2026-09-27");
+  assert.equal(week.buckets[0].endDay, "2026-09-27");
+  assert.equal(week.buckets[1].startDay, "2026-09-28");
+  assert.equal(week.buckets[1].endDay, "2026-10-04");
+  for (const bucket of week.buckets.slice(1, -1)) {
+    assert.equal(new Date(`${bucket.startDay}T00:00:00Z`).getUTCDay(), 1, "week buckets must start on Monday");
+    assert.equal(bucket.days, 7);
+  }
+  assert.equal(week.buckets[week.buckets.length - 1].startDay, "2026-12-21");
+  assert.equal(week.buckets[week.buckets.length - 1].endDay, "2026-12-25");
+
+  const sum = (list, pick) => list.reduce((total, item) => total + pick(item), 0);
+  assert.equal(sum(week.buckets, (bucket) => bucket.totals.totalTokens), sum(days90, (entry) => entry.totals.totalTokens));
+  assert.equal(sum(week.buckets, (bucket) => bucket.totals.requests), sum(days90, (entry) => entry.totals.requests));
+  assert.ok(
+    Math.abs(sum(week.buckets, (bucket) => bucket.costUsd) - sum(days90, (entry) => entry.costUsd)) < 1e-5,
+    "bucket costs must add up to the daily total",
+  );
+
+  const days400 = buildDailyRange(400, Date.UTC(2025, 0, 1));
+  const month = bucketDaily(days400);
+  assert.equal(month.granularity, "month");
+  assert.equal(month.buckets.length, 14);
+  assert.equal(month.buckets[0].startDay, "2025-01-01");
+  assert.equal(month.buckets[0].endDay, "2025-01-31");
+  assert.equal(month.buckets[month.buckets.length - 1].startDay, "2026-02-01");
+  assert.equal(month.buckets[month.buckets.length - 1].endDay, "2026-02-04");
+
+  const empty = bucketDaily([]);
+  assert.equal(empty.granularity, "day");
+  assert.equal(empty.buckets.length, 0);
+});
+
+test("long ranges bucket the chart instead of scrolling", async () => {
+  const host = await startHost();
+  const mod = host.bundleModule;
+
+  const weekly = clone(MOCK_SUMMARY);
+  weekly.daily = buildDailyRange(90);
+  weekly.range = { ...weekly.range, days: 90 };
+  const html = mod.__test.previewHtml(weekly);
+  assert.match(html, /每周 token 消耗/);
+  assert.match(html, /悬停查看明细/);
+  assert.match(html, /data-scroll="false"/);
+  assert.equal((html.match(/class="ts_bar"/g) || []).length, 14);
+  assert.match(html, /2026-09-28 – 2026-10-04/);
+
+  const english = mod.__test.previewHtml(weekly, { locale: "en" });
+  assert.match(english, /Weekly token spend/);
+
+  const monthly = clone(MOCK_SUMMARY);
+  monthly.daily = buildDailyRange(400, Date.UTC(2025, 0, 1));
+  monthly.range = { ...monthly.range, days: 0 };
+  const monthHtml = mod.__test.previewHtml(monthly);
+  assert.match(monthHtml, /每月 token 消耗/);
+  assert.equal((monthHtml.match(/class="ts_bar"/g) || []).length, 14);
+  assert.match(monthHtml, /data-scroll="false"/);
+  assert.match(monthHtml, /2026-02-01 – 2026-02-04/);
+
+  // The 30-day fixture keeps one bar per day, so the default view is unchanged.
+  const daily = mod.__test.previewHtml(MOCK_SUMMARY);
+  assert.match(daily, /每日 token 消耗/);
+  assert.equal((daily.match(/class="ts_bar"/g) || []).length, 30);
 });
 
 test("peak/off-peak pricing note renders when prices.timeAware is true", async () => {

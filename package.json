@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-token-stats",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "DeepSeek Harness (DSH) plugin: cross-session token usage statistics with daily spend, per-model/per-project breakdowns, official DeepSeek and OpenCode Go peak/off-peak cost estimates, and a Web GUI dashboard (Settings → Token usage).",
   "keywords": [
     "deepseek-harness",
